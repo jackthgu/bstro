@@ -598,7 +598,7 @@ def parse_args():
     # Model architectures
     #########################################################
     parser.add_argument('-a', '--arch', default='hrnet-w64',
-                    help='CNN backbone architecture: hrnet-w64, hrnet, resnet50')
+                    help='CNN backbone architecture: hrnet-w32, hrnet-w64, hrnet, resnet50')
     parser.add_argument("--num_hidden_layers", default=4, type=int, required=False, 
                         help="Update model config if given")
     parser.add_argument("--hidden_size", default=-1, type=int, required=False, 
@@ -714,7 +714,13 @@ def main(args):
 
         
         # init ImageNet pre-trained backbone model
-        if args.arch=='hrnet':
+        if args.arch=='hrnet-w32':
+            hrnet_yaml = 'models/hrnet/cls_hrnet_w32_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
+            hrnet_checkpoint = 'models/hrnet/hrnetv2_w32_imagenet_pretrained.pth'
+            hrnet_update_config(hrnet_config, hrnet_yaml)
+            backbone = get_cls_net(hrnet_config, pretrained=hrnet_checkpoint)
+            logger.info('=> loading hrnet-v2-w32 model')
+        elif args.arch=='hrnet':
             hrnet_yaml = 'models/hrnet/cls_hrnet_w40_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
             hrnet_checkpoint = 'models/hrnet/hrnetv2_w40_imagenet_pretrained.pth'
             hrnet_update_config(hrnet_config, hrnet_yaml)
