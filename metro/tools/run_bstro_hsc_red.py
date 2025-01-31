@@ -597,21 +597,17 @@ def parse_args():
     #########################################################
     # Model architectures
     #########################################################
-    # 기존 'hrnet-w64' → 'hrnet-w32'로 변경 (더 가벼운 HRNet)
-    parser.add_argument('-a', '--arch', default='hrnet-w32',
-                        help='CNN backbone architecture: hrnet-w64, hrnet-w32, hrnet-w18, resnet50, etc.')
-    # 기존 4 → 2 (Transformer 레이어 수 축소)
-    parser.add_argument("--num_hidden_layers", default=2, type=int, required=False, 
-                        help="Update model config if given (reduced for speed).")
-    # 기존 -1 → 384 (Transformer 히든 차원 축소)
-    parser.add_argument("--hidden_size", default=384, type=int, required=False, 
-                        help="Update model config if given (reduced for speed).")
-    # 기존 4 → 2 (어텐션 헤드 수 축소)
-    parser.add_argument("--num_attention_heads", default=2, type=int, required=False, 
-                        help="Update model config if given. The division of hidden_size / num_attention_heads should be an integer.")
+    parser.add_argument('-a', '--arch', default='hrnet-w64',
+                    help='CNN backbone architecture: hrnet-w64, hrnet, resnet50')
+    parser.add_argument("--num_hidden_layers", default=4, type=int, required=False, 
+                        help="Update model config if given")
+    parser.add_argument("--hidden_size", default=-1, type=int, required=False, 
+                        help="Update model config if given")
+    parser.add_argument("--num_attention_heads", default=4, type=int, required=False, 
+                        help="Update model config if given. Note that the division of "
+                        "hidden_size / num_attention_heads should be in integer.")
     parser.add_argument("--intermediate_size", default=-1, type=int, required=False, 
                         help="Update model config if given.")
-    
     parser.add_argument("--input_feat_dim", default='2051,512,128', type=str, 
                         help="The Image Feature Dimension.")          
     parser.add_argument("--hidden_feat_dim", default='1024,256,128', type=str, 
@@ -631,8 +627,11 @@ def parse_args():
                         help="random seed for initialization.")
     parser.add_argument("--local_rank", type=int, default=0, 
                         help="For distributed training.")
+
     parser.add_argument("--output_attentions", default=False, action='store_true',) 
-    
+
+
+
     args = parser.parse_args()
     return args
 
@@ -644,11 +643,13 @@ def main(args):
     args.distributed = args.num_gpus > 1
     args.device = torch.device(args.device)
     if args.distributed:
-        print("Init distributed training on local rank {} ({}), rank {}, world size {}".format(
-              args.local_rank, int(os.environ.get("LOCAL_RANK", 0)), 0, args.num_gpus))
+        # print("Init distributed training on local rank {} ({}), rank {}, world size {}".format(args.local_rank, int(os.environ["LOCAL_RANK"]), int(os.environ["NODE_RANK"]), args.num_gpus))
+        print("Init distributed training on local rank {} ({}), rank {}, world size {}".format(args.local_rank, int(os.environ["LOCAL_RANK"]), 0, args.num_gpus))
         torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-        local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        torch.distributed.init_process_group(
+            backend='nccl', init_method='env://'
+        )
+        local_rank = int(os.environ["LOCAL_RANK"])
         args.device = torch.device("cuda", local_rank)
         synchronize()
 
@@ -661,89 +662,126 @@ def main(args):
     smpl = SMPL().to(args.device)
     mesh_sampler = Mesh()
 
+
     # Load model
     trans_encoder = []
+
     input_feat_dim = [int(item) for item in args.input_feat_dim.split(',')]
     hidden_feat_dim = [int(item) for item in args.hidden_feat_dim.split(',')]
     output_feat_dim = input_feat_dim[1:] + [1]
     
-    # init three transformer-encoder blocks in a loop
-    for i in range(len(output_feat_dim)):
-        config_class, model_class = BertConfig, METRO
-        config = config_class.from_pretrained(args.config_name if args.config_name \
-                else args.model_name_or_path)
-
-        config.output_attentions = args.output_attentions
-        config.hidden_dropout_prob = args.drop_out
-        config.img_feature_dim = input_feat_dim[i] 
-        config.output_feature_dim = output_feat_dim[i]
-        # 여기서 hidden_size, num_hidden_layers 등을 업데이트
-        if args.hidden_size > 0:  # default=384
-            config.hidden_size = args.hidden_size
-        if args.num_hidden_layers > 0:  # default=2
-            config.num_hidden_layers = args.num_hidden_layers
-        if args.num_attention_heads > 0:  # default=2
-            config.num_attention_heads = args.num_attention_heads
-        if args.intermediate_size > 0:
-            config.intermediate_size = args.intermediate_size
-
-        model = model_class(config=config)
-        trans_encoder.append(model)
-
-    # init ImageNet pre-trained backbone model
-    if args.arch=='hrnet-w32':
-        hrnet_yaml = 'models/hrnet/cls_hrnet_w32_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
-        hrnet_checkpoint = 'models/hrnet/hrnetv2_w32_imagenet_pretrained.pth'
-        hrnet_update_config(hrnet_config, hrnet_yaml)
-        backbone = get_cls_net(hrnet_config, pretrained=hrnet_checkpoint)
-        logger.info('=> loading hrnet-v2-w32 model')
-    elif args.arch=='hrnet':
-        hrnet_yaml = 'models/hrnet/cls_hrnet_w40_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
-        hrnet_checkpoint = 'models/hrnet/hrnetv2_w40_imagenet_pretrained.pth'
-        hrnet_update_config(hrnet_config, hrnet_yaml)
-        backbone = get_cls_net(hrnet_config, pretrained=hrnet_checkpoint)
-        logger.info('=> loading hrnet-v2-w40 model')
-    elif args.arch=='hrnet-w64':
-        hrnet_yaml = 'models/hrnet/cls_hrnet_w64_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
-        hrnet_checkpoint = 'models/hrnet/hrnetv2_w64_imagenet_pretrained.pth'
-        hrnet_update_config(hrnet_config, hrnet_yaml)
-        backbone = get_cls_net(hrnet_config, pretrained=hrnet_checkpoint)
-        logger.info('=> loading hrnet-v2-w64 model')
+    if args.run_eval_only==True and args.resume_checkpoint!=None and args.resume_checkpoint!='None' and 'state_dict' not in args.resume_checkpoint:
+        # if only run eval, load checkpoint
+        logger.info("Evaluation: Loading from checkpoint {}".format(args.resume_checkpoint))
+        _bstro_network = torch.load(args.resume_checkpoint)
     else:
-        logger.info("=> using pre-trained model '{}'".format(args.arch))
-        backbone = models.__dict__[args.arch](pretrained=True)
-        # remove the last fc layer
-        backbone = torch.nn.Sequential(*list(backbone.children())[:-2])
+        # init three transformer-encoder blocks in a loop
+        for i in range(len(output_feat_dim)):
+            config_class, model_class = BertConfig, METRO
+            config = config_class.from_pretrained(args.config_name if args.config_name \
+                    else args.model_name_or_path)
 
-    trans_encoder = torch.nn.Sequential(*trans_encoder)
-    total_params = sum(p.numel() for p in trans_encoder.parameters())
-    logger.info('Transformers total parameters: {}'.format(total_params))
-    backbone_total_params = sum(p.numel() for p in backbone.parameters())
-    logger.info('Backbone total parameters: {}'.format(backbone_total_params))
+            config.output_attentions = args.output_attentions
+            config.hidden_dropout_prob = args.drop_out
+            config.img_feature_dim = input_feat_dim[i] 
+            config.output_feature_dim = output_feat_dim[i]
+            args.hidden_size = hidden_feat_dim[i]
 
-    # build end-to-end METRO network
-    _bstro_network = BSTRO_Network(args, config, backbone, trans_encoder, mesh_sampler)
+            if args.legacy_setting==True:
+                # During our paper submission, we were using the original intermediate size, which is 3072 fixed
+                # We keep our legacy setting here 
+                args.intermediate_size = -1
+            else:
+                # We have recently tried to use an updated intermediate size, which is 4*hidden-size.
+                # But we didn't find significant performance changes on Human3.6M (~36.7 PA-MPJPE)
+                args.intermediate_size = int(args.hidden_size*4)
 
-    # resume 모델 로드
-    if args.resume_checkpoint is not None and args.resume_checkpoint!='None':
-        logger.info("Loading state dict from checkpoint {}".format(args.resume_checkpoint))
-        cpu_device = torch.device('cpu')
-        state_dict = torch.load(args.resume_checkpoint, map_location=cpu_device)
-        _bstro_network.load_state_dict(state_dict, strict=False)
-        del state_dict
+            # update model structure if specified in arguments
+            update_params = ['num_hidden_layers', 'hidden_size', 'num_attention_heads', 'intermediate_size']
 
+            for idx, param in enumerate(update_params):
+                arg_param = getattr(args, param)
+                config_param = getattr(config, param)
+                if arg_param > 0 and arg_param != config_param:
+                    logger.info("Update config parameter {}: {} -> {}".format(param, config_param, arg_param))
+                    setattr(config, param, arg_param)
+
+            # init a transformer encoder and append it to a list
+            assert config.hidden_size % config.num_attention_heads == 0
+            model = model_class(config=config) 
+            logger.info("Init model from scratch.")
+            trans_encoder.append(model)
+
+        
+        # init ImageNet pre-trained backbone model
+        if args.arch=='hrnet':
+            hrnet_yaml = 'models/hrnet/cls_hrnet_w40_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
+            hrnet_checkpoint = 'models/hrnet/hrnetv2_w40_imagenet_pretrained.pth'
+            hrnet_update_config(hrnet_config, hrnet_yaml)
+            backbone = get_cls_net(hrnet_config, pretrained=hrnet_checkpoint)
+            logger.info('=> loading hrnet-v2-w40 model')
+        elif args.arch=='hrnet-w64':
+            hrnet_yaml = 'models/hrnet/cls_hrnet_w64_sgd_lr5e-2_wd1e-4_bs32_x100.yaml'
+            hrnet_checkpoint = 'models/hrnet/hrnetv2_w64_imagenet_pretrained.pth'
+            hrnet_update_config(hrnet_config, hrnet_yaml)
+            backbone = get_cls_net(hrnet_config, pretrained=hrnet_checkpoint)
+            logger.info('=> loading hrnet-v2-w64 model')
+        else:
+            print("=> using pre-trained model '{}'".format(args.arch))
+            backbone = models.__dict__[args.arch](pretrained=True)
+            # remove the last fc layer
+            backbone = torch.nn.Sequential(*list(backbone.children())[:-2])
+
+
+        trans_encoder = torch.nn.Sequential(*trans_encoder)
+        total_params = sum(p.numel() for p in trans_encoder.parameters())
+        logger.info('Transformers total parameters: {}'.format(total_params))
+        backbone_total_params = sum(p.numel() for p in backbone.parameters())
+        logger.info('Backbone total parameters: {}'.format(backbone_total_params))
+
+        # build end-to-end METRO network (CNN backbone + multi-layer transformer encoder)
+        _bstro_network = BSTRO_Network(args, config, backbone, trans_encoder, mesh_sampler)
+
+        if config.output_attentions:
+            setattr(_bstro_network.trans_encoder[-1].config,'output_attentions', True)
+            setattr(_bstro_network.trans_encoder[-1].config,'output_hidden_states', True)
+            _bstro_network.trans_encoder[-1].bert.encoder.output_attentions = True
+            _bstro_network.trans_encoder[-1].bert.encoder.output_hidden_states =  True
+            for iter_layer in range(4):
+                _bstro_network.trans_encoder[-1].bert.encoder.layer[iter_layer].attention.self.output_attentions = True
+            for inter_block in range(3):
+                setattr(_bstro_network.trans_encoder[-1].config,'device', args.device)
+
+        if args.resume_checkpoint!=None and args.resume_checkpoint!='None':
+            # for fine-tuning or resume training or inference, load weights from checkpoint
+            logger.info("Loading state dict from checkpoint {}".format(args.resume_checkpoint))
+            cpu_device = torch.device('cpu')
+            state_dict = torch.load(args.resume_checkpoint, map_location=cpu_device)
+            if not args.run_eval_only and ('3dpw' in args.resume_checkpoint or 'h36m' in args.resume_checkpoint):
+                logger.info('=> initializing with metro weights from {}'.format(args.resume_checkpoint))
+                # initializing with METRO pretrained on 3dpw or h36m. Only apply to the backbone.
+                state_dict = {k: v for k, v in state_dict.items() if k != 'trans_encoder.2.cls_head.weight' and \
+                                                                    k != 'trans_encoder.2.cls_head.bias' and \
+                                                                    k != 'trans_encoder.2.residual.weight' and \
+                                                                    k != 'trans_encoder.2.residual.bias' and \
+                                                                    k != 'conv_learn_tokens.weight' and \
+                                                                    k != 'conv_learn_tokens.bias'}
+            _bstro_network.load_state_dict(state_dict, strict=False)
+            del state_dict
+    
     _bstro_network.to(args.device)
     logger.info("Training parameters %s", args)
 
     if args.run_eval_only==True:
         test_dataloader = make_data_loader(args, args.test_yaml, 
-                                           args.distributed, is_train=False, scale_factor=args.img_scale_factor, hsi_flag=True)
+                                        args.distributed, is_train=False, scale_factor=args.img_scale_factor, hsi_flag=True)
         run_eval_general(args, test_dataloader, _bstro_network, smpl, mesh_sampler)
+
     else:
         train_dataloader = make_data_loader(args, args.train_yaml, 
                                             args.distributed, is_train=True, scale_factor=args.img_scale_factor, hsi_flag=True)
         val_dataloader = make_data_loader(args, args.val_yaml, 
-                                          args.distributed, is_train=False, scale_factor=args.img_scale_factor, hsi_flag=True)
+                                        args.distributed, is_train=False, scale_factor=args.img_scale_factor, hsi_flag=True)
         run(args, train_dataloader, val_dataloader, _bstro_network, smpl, mesh_sampler)
 
 
