@@ -762,7 +762,7 @@ def main(args):
             # for fine-tuning or resume training or inference, load weights from checkpoint
             logger.info("Loading state dict from checkpoint {}".format(args.resume_checkpoint))
             cpu_device = torch.device('cpu')
-            state_dict = torch.load(args.resume_checkpoint, map_location=cpu_device, strict=False)
+            state_dict = torch.load(args.resume_checkpoint, map_location=cpu_device)
             if not args.run_eval_only and ('3dpw' in args.resume_checkpoint or 'h36m' in args.resume_checkpoint):
                 logger.info('=> initializing with metro weights from {}'.format(args.resume_checkpoint))
                 # initializing with METRO pretrained on 3dpw or h36m. Only apply to the backbone.
